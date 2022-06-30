@@ -2429,6 +2429,70 @@ func TestDistributor_IngestionIsControlledByForwarder(t *testing.T) {
 	}
 }
 
+func TestDistributor_ForwarderWithSlowTargets(t *testing.T) {
+	type testcase struct {
+		name                string
+		ingesterPushLatency time.Duration
+		forwardingLatency   time.Duration
+	}
+	metric := "test_metric"
+	testcases := []testcase{
+		{
+			name:                "slow forwarding target",
+			ingesterPushLatency: 0,
+			forwardingLatency:   1 * time.Second,
+		}, {
+			name:                "slow ingester",
+			ingesterPushLatency: 1 * time.Second,
+			forwardingLatency:   0,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := user.InjectOrgID(context.Background(), "user")
+
+			cleanedUp := atomic.NewBool(false)
+			cleanUpFunc := func() { cleanedUp.Store(true) }
+			ensureNotCleanedUp := func() { assert.False(t, cleanedUp.Load(), "cleanup should not have been called yet") }
+			ensureCleanedUp := func() { assert.True(t, cleanedUp.Load(), "cleanup should have been called") }
+
+			limits := &validation.Limits{ForwardingRules: validation.ForwardingRules{metric: validation.ForwardingRule{}}}
+			flagext.DefaultValues(limits)
+
+			distributors, ingesters, _ := prepare(t, prepConfig{
+				numIngesters:      1,
+				happyIngesters:    1,
+				replicationFactor: 1,
+				numDistributors:   1,
+				limits:            limits,
+				forwarding:        true,
+				postPushCallback: func() {
+					time.Sleep(tc.ingesterPushLatency)
+					ensureNotCleanedUp()
+				},
+			})
+
+			forwarder := setMockForwarder(distributors[0], true)
+			forwarder.sendCallback = func() {
+				time.Sleep(tc.forwardingLatency)
+				ensureNotCleanedUp()
+			}
+
+			request := makeWriteRequest(123456789000, 5, 0, false, metric)
+			response, err := distributors[0].PushWithCleanup(ctx, request, cleanUpFunc)
+			assert.NoError(t, err)
+			assert.Equal(t, emptyResponse, response)
+			assert.Equal(t, 1, int(forwarder.sendCount.Load()))
+
+			ingestedMetrics := getIngestedMetrics(ctx, t, &ingesters[0])
+			assert.Equal(t, []string{metric}, ingestedMetrics)
+
+			ensureCleanedUp()
+		})
+	}
+}
+
 // getIngestedMetrics takes a mock ingester and returns all the metric names which it has ingested.
 func getIngestedMetrics(ctx context.Context, t *testing.T, ingester *mockIngester) []string {
 	labelsClient, err := ingester.LabelNamesAndValues(ctx, nil)
@@ -2726,6 +2790,7 @@ type prepConfig struct {
 	ingesterZones                []string
 	zonesResponseDelay           map[string]time.Duration
 	forwarding                   bool
+	postPushCallback             func()
 }
 
 func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, []*prometheus.Registry) {
@@ -2871,6 +2936,12 @@ func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, []*p
 	}
 
 	t.Cleanup(func() { stopAll(distributors, ingestersRing) })
+
+	if cfg.postPushCallback != nil {
+		for ingesterIdx := range ingesters {
+			ingesters[ingesterIdx].postPushCallback = cfg.postPushCallback
+		}
+	}
 
 	return distributors, ingesters, registries
 }
@@ -3041,6 +3112,7 @@ type mockIngester struct {
 	seriesCountTotal uint64
 	zone             string
 	responseDelay    time.Duration
+	postPushCallback func()
 }
 
 func (i *mockIngester) series() map[uint32]*mimirpb.PreallocTimeseries {
@@ -3068,6 +3140,10 @@ func (i *mockIngester) Close() error {
 }
 
 func (i *mockIngester) Push(ctx context.Context, req *mimirpb.WriteRequest, opts ...grpc.CallOption) (*mimirpb.WriteResponse, error) {
+	if i.postPushCallback != nil {
+		defer i.postPushCallback()
+	}
+
 	i.Lock()
 	defer i.Unlock()
 
@@ -3471,6 +3547,9 @@ func setMockForwarder(distributor *Distributor, ingest bool) *mockForwarder {
 type mockForwarder struct {
 	ingest    bool
 	sendCount atomic.Uint32
+
+	// Callback to run in place of the actual forwarding request.
+	sendCallback func()
 }
 
 func (m *mockForwarder) NewRequest(ctx context.Context, tenant string, _ validation.ForwardingRules) forwarding.Request {
@@ -3486,10 +3565,18 @@ func (m *mockForwardingRequest) Add(sample mimirpb.PreallocTimeseries) bool {
 }
 
 func (m *mockForwardingRequest) Send(ctx context.Context) <-chan error {
-	m.forwarder.sendCount.Inc()
-
 	errCh := make(chan error)
-	close(errCh)
+
+	go func() {
+		defer close(errCh)
+
+		if m.forwarder.sendCallback != nil {
+			m.forwarder.sendCallback()
+		}
+
+		m.forwarder.sendCount.Inc()
+	}()
+
 	return errCh
 }
 
