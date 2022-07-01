@@ -169,7 +169,7 @@ Follow these steps to inspect what change will be applied to the configuration.
 Preparation:
 
 1. Install the [helm diff](https://github.com/databus23/helm-diff) plugin.
-1. Make sure to use `configStorageType` is set to `ConfigMap`
+1. Make sure that the value `configStorageType` is set to `ConfigMap` (it is the default).
 
 Inspecting changes with the `helm diff` sub command:
 
