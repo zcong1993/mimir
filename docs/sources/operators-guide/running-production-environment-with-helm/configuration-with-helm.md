@@ -171,7 +171,7 @@ Preparation:
 1. Install the [helm diff](https://github.com/databus23/helm-diff) plugin.
 1. Make sure that the value `configStorageType` is set to `ConfigMap` (it is the default).
 
-Inspecting changes with the `helm diff` sub command:
+Inspecting changes with the `helm diff` command:
 
 ```bash
 helm -n mimir-test diff upgrade grafana/mimir-distributed -f custom.yaml
