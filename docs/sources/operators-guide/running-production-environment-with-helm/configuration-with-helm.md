@@ -20,7 +20,7 @@ There are three ways configuration parameters can be modified:
 Grafana Mimir components are run with a configuration that is calculated from all three:
 
 1. The configuration YAML in `mimir.config` is evaulated for Helm templates. This step is intended to ensure that the configuration applies to the Kubernetes cluster where it will be installed. For example setting up cluster specific addresses.
-1. The values from `mimir.structuredConfig` are merged on top. This steps is intended to apply user specific customizations. For example S3 storage details.
+1. The values from `mimir.structuredConfig` are merged on top. This step is intended to apply user specific customizations. For example S3 storage details.
 1. The resulting YAML configuration is then sorted alphabetically and stored in a `ConfigMap` (or `Secret` depending on the value of `configStorageType`) and provided to all Grafana Mimir components.
 1. When Grafana Mimir components are run in pods, the configuration file as well as any extra CLI flags are provided to the component.
 1. Each component evaulates the configuration, substituting environment variables as required. Note that extra CLI flags take precendence over the configuration file.
